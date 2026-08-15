@@ -30,6 +30,7 @@ import { composeEntitlements, type ComposedEntitlements } from "./auth/entitleme
 import { createDiscordRegistration } from "./providers/discord/index.js";
 import { createGitHubRegistration } from "./providers/github/index.js";
 import { createSlackRegistration } from "./providers/slack/index.js";
+import { createLinearRegistration } from "./providers/linear/index.js";
 import { readInstanceAuthPolicy } from "./auth/instance-policy.js";
 import { createRuntimeConfiguration } from "./runtime-configuration/index.js";
 import { CompositionResources } from "./composition-resources.js";
@@ -111,6 +112,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       createGitHubRegistration(providerOptions),
       createDiscordRegistration(providerOptions),
       createSlackRegistration(providerOptions),
+      createLinearRegistration(providerOptions),
     ];
     return await createApplicationRuntime({
       database,

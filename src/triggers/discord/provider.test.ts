@@ -100,7 +100,7 @@ describe("Discord Phase 1 trigger provider", () => {
       guildName: "Secondary",
     };
     database.organizationConnectionUsage = () =>
-      Promise.resolve({ github: [], slack: [], discord: [connection] });
+      Promise.resolve({ github: [], slack: [], discord: [connection], linear: [] });
     database.findDiscordConnectionForOrganization = () => Promise.resolve(connection);
     const { project, revision, store } = await createActiveProjectConfiguration(
       database,

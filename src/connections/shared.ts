@@ -74,7 +74,7 @@ export function connectionResult(
 
 export function connectionCallbackFailure(input: {
   error: unknown;
-  provider: "github" | "discord" | "slack";
+  provider: "github" | "discord" | "slack" | "linear";
   phase: string;
   applicationBaseUrl: string;
   returnRoute: string;

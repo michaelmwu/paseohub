@@ -195,7 +195,10 @@ export async function handleConnections(
     | "discordCallback"
     | "slackStart"
     | "slackDisconnect"
-    | "slackCallback",
+    | "slackCallback"
+    | "linearStart"
+    | "linearDisconnect"
+    | "linearCallback",
 ): Promise<Response> {
   const runtime = await getApplication();
   if (operation === "status") return runtime.connectionStatus(request);
@@ -214,6 +217,9 @@ const CONNECTION_ACTIONS = {
   slackStart: { provider: "slack", name: "start" },
   slackDisconnect: { provider: "slack", name: "disconnect" },
   slackCallback: { provider: "slack", name: "callback" },
+  linearStart: { provider: "linear", name: "start" },
+  linearDisconnect: { provider: "linear", name: "disconnect" },
+  linearCallback: { provider: "linear", name: "callback" },
 } as const;
 
 export async function resolveOrganizationResources(

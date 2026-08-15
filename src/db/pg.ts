@@ -55,6 +55,7 @@ import type {
   AdvanceGitHubConnectionAttemptInput,
   BindDiscordConnectionInput,
   BindGitHubConnectionInput,
+  BindLinearConnectionInput,
   BindSlackConnectionInput,
   ConnectionStartAuthority,
   ConnectionProvider,
@@ -62,7 +63,9 @@ import type {
   StartConnectionAttemptInput,
   AcceptDiscordEventInput,
   AcceptGitHubEventInput,
+  AcceptLinearEventInput,
   AcceptSlackEventInput,
+  UpdateLinearConnectionTokensInput,
   GitHubLifecycleReceiptClaim,
   GitHubLifecycleReceiptClaimInput,
   GitHubLifecycleResult,
@@ -142,6 +145,10 @@ class PgDatabase implements Database {
 
   acceptSlackEvent(input: AcceptSlackEventInput) {
     return this.triggerAcceptance.acceptSlack(input);
+  }
+
+  acceptLinearEvent(input: AcceptLinearEventInput) {
+    return this.triggerAcceptance.acceptLinear(input);
   }
 
   persistManualEvent(input: PersistManualEventInput) {
@@ -3372,7 +3379,7 @@ class PgDatabase implements Database {
        order by connection.account_login, connection.id`,
       [organizationId],
     );
-    const [discord, slack] = await Promise.all([
+    const [discord, slack, linear] = await Promise.all([
       query<{
         id: string;
         organization_id: string;
@@ -3402,6 +3409,25 @@ class PgDatabase implements Database {
          order by team_name, id`,
         [organizationId],
       ),
+      query<{
+        id: string;
+        organization_id: string;
+        slug: string;
+        linear_organization_id: string;
+        linear_organization_name: string;
+        app_user_id: string;
+        access_token: string;
+        refresh_token: string | null;
+        access_token_expires_at: Date | null;
+        scopes: unknown;
+      }>(
+        this.pool,
+        `select id, organization_id, slug, linear_organization_id, linear_organization_name,
+                app_user_id, access_token, refresh_token, access_token_expires_at, scopes
+         from linear_connections where organization_id = $1
+         order by linear_organization_name, id`,
+        [organizationId],
+      ),
     ]);
     return {
       github: github.rows.map((row) => ({
@@ -3429,6 +3455,18 @@ class PgDatabase implements Database {
         teamName: row.team_name,
         botUserId: row.bot_user_id,
         botAccessToken: row.bot_access_token,
+        scopes: stringArray(row.scopes),
+      })),
+      linear: linear.rows.map((row) => ({
+        id: row.id,
+        organizationId: row.organization_id,
+        slug: row.slug,
+        linearOrganizationId: row.linear_organization_id,
+        linearOrganizationName: row.linear_organization_name,
+        appUserId: row.app_user_id,
+        accessToken: row.access_token,
+        refreshToken: row.refresh_token,
+        accessTokenExpiresAt: row.access_token_expires_at,
         scopes: stringArray(row.scopes),
       })),
     };
@@ -3630,6 +3668,14 @@ class PgDatabase implements Database {
     return this.connections.bindSlack(input);
   }
 
+  bindLinearConnection(input: BindLinearConnectionInput): Promise<void> {
+    return this.connections.bindLinear(input);
+  }
+
+  updateLinearConnectionTokens(input: UpdateLinearConnectionTokensInput): Promise<void> {
+    return this.connections.updateLinearTokens(input);
+  }
+
   disconnectConnection(
     provider: ConnectionProvider,
     connectionId: string,
@@ -3650,8 +3696,16 @@ class PgDatabase implements Database {
     return this.connections.findSlack(teamId);
   }
 
+  findLinearConnection(linearOrganizationId: string) {
+    return this.connections.findLinear(linearOrganizationId);
+  }
+
   findSlackConnectionForOrganization(organizationId: string, teamId: string) {
     return this.connections.findSlackForOrganization(organizationId, teamId);
+  }
+
+  findLinearConnectionForOrganization(organizationId: string, linearOrganizationId: string) {
+    return this.connections.findLinearForOrganization(organizationId, linearOrganizationId);
   }
 
   findDiscordConnectionForOrganization(organizationId: string, guildId: string) {

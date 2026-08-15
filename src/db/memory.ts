@@ -25,6 +25,7 @@ import type {
   AdvanceGitHubConnectionAttemptInput,
   BindDiscordConnectionInput,
   BindGitHubConnectionInput,
+  BindLinearConnectionInput,
   BindSlackConnectionInput,
   ConnectionStartAuthority,
   ConnectionProvider,
@@ -36,6 +37,7 @@ import type {
   ConfigurationSyncAttemptRecord,
   AcceptDiscordEventInput,
   AcceptGitHubEventInput,
+  AcceptLinearEventInput,
   AcceptSlackEventInput,
   DurableProviderEvent,
   GitHubLifecycleReceiptClaim,
@@ -55,6 +57,7 @@ import type {
   GitHubConfigurationTarget,
   DiscordConnectionRecord,
   SlackConnectionRecord,
+  LinearConnectionRecord,
   GitHubRepositoryRecord,
   OrganizationConnectionUsage,
   ProjectTriggerRoute,
@@ -82,6 +85,7 @@ import type {
   SyncBillingPlanInput,
   OrganizationSubscriptionRecord,
   ReconcileOrganizationSubscriptionInput,
+  UpdateLinearConnectionTokensInput,
 } from "./types.js";
 import {
   clearOverrideKey,
@@ -180,6 +184,7 @@ class MemoryDatabase implements Database {
   private readonly githubConnections = new Map<number, GitHubConnectionRecord>();
   private readonly discordConnections = new Map<string, DiscordConnectionRecord>();
   private readonly slackConnections = new Map<string, SlackConnectionRecord>();
+  private readonly linearConnections = new Map<string, LinearConnectionRecord>();
   private readonly organizationIds: Set<string>;
 
   constructor(private readonly options: MemoryDatabaseOptions = {}) {
@@ -1019,6 +1024,18 @@ class MemoryDatabase implements Database {
       binding?.organizationId,
       binding?.id,
       input.teamId,
+      reason,
+    );
+  }
+
+  async acceptLinearEvent(input: AcceptLinearEventInput): Promise<ProviderEventAcceptance> {
+    const binding = await this.findLinearConnection(input.linearOrganizationId);
+    const reason = linearDropReason(input, binding);
+    return this.acceptMemoryEvent(
+      input,
+      binding?.organizationId,
+      binding?.id,
+      input.projectId ?? null,
       reason,
     );
   }
@@ -2476,6 +2493,9 @@ class MemoryDatabase implements Database {
       slack: Array.from(this.slackConnections.values()).filter(
         (connection) => connection.organizationId === organizationId,
       ),
+      linear: Array.from(this.linearConnections.values()).filter(
+        (connection) => connection.organizationId === organizationId,
+      ),
     };
   }
 
@@ -2631,6 +2651,14 @@ class MemoryDatabase implements Database {
     return connectionPersistenceUnavailable();
   }
 
+  bindLinearConnection(_input: BindLinearConnectionInput): Promise<void> {
+    return connectionPersistenceUnavailable();
+  }
+
+  updateLinearConnectionTokens(_input: UpdateLinearConnectionTokensInput): Promise<void> {
+    return connectionPersistenceUnavailable();
+  }
+
   disconnectConnection(
     _provider: ConnectionProvider,
     _connectionId: string,
@@ -2651,11 +2679,23 @@ class MemoryDatabase implements Database {
     return Promise.resolve(this.slackConnections.get(_teamId));
   }
 
+  findLinearConnection(_linearOrganizationId: string): Promise<LinearConnectionRecord | undefined> {
+    return Promise.resolve(this.linearConnections.get(_linearOrganizationId));
+  }
+
   findSlackConnectionForOrganization(
     organizationId: string,
     teamId: string,
   ): Promise<SlackConnectionRecord | undefined> {
     const connection = this.slackConnections.get(teamId);
+    return Promise.resolve(connection?.organizationId === organizationId ? connection : undefined);
+  }
+
+  findLinearConnectionForOrganization(
+    organizationId: string,
+    linearOrganizationId: string,
+  ): Promise<LinearConnectionRecord | undefined> {
+    const connection = this.linearConnections.get(linearOrganizationId);
     return Promise.resolve(connection?.organizationId === organizationId ? connection : undefined);
   }
 
@@ -2680,7 +2720,11 @@ class MemoryDatabase implements Database {
   }
 
   private async acceptMemoryEvent(
-    input: AcceptGitHubEventInput | AcceptDiscordEventInput | AcceptSlackEventInput,
+    input:
+      | AcceptGitHubEventInput
+      | AcceptDiscordEventInput
+      | AcceptSlackEventInput
+      | AcceptLinearEventInput,
     organizationId: string | undefined,
     connectionId: string | undefined,
     resourceId: string | null,
@@ -2868,11 +2912,15 @@ function connectionPersistenceUnavailable(): never {
 }
 
 function providerForInput(
-  input: AcceptGitHubEventInput | AcceptDiscordEventInput | AcceptSlackEventInput,
-): "github" | "discord" | "slack" {
+  input:
+    | AcceptGitHubEventInput
+    | AcceptDiscordEventInput
+    | AcceptSlackEventInput
+    | AcceptLinearEventInput,
+): "github" | "discord" | "slack" | "linear" {
   if ("installationId" in input) return "github";
   if ("guildId" in input) return "discord";
-  return "slack";
+  return "teamId" in input ? "slack" : "linear";
 }
 
 function githubDropReason(
@@ -2900,6 +2948,15 @@ function slackDropReason(
 ): string | undefined {
   if (input.dropReason !== undefined) return input.dropReason;
   if (binding === undefined) return "slack_unbound";
+  return undefined;
+}
+
+function linearDropReason(
+  input: AcceptLinearEventInput,
+  binding: LinearConnectionRecord | undefined,
+): string | undefined {
+  if (input.dropReason !== undefined) return input.dropReason;
+  if (binding === undefined) return "linear_unbound";
   return undefined;
 }
 

@@ -8,6 +8,7 @@ import type {
   AdvanceGitHubConnectionAttemptInput,
   BindDiscordConnectionInput,
   BindGitHubConnectionInput,
+  BindLinearConnectionInput,
   BindSlackConnectionInput,
   ConnectionAccountAccess,
   ConnectionAttemptPhase,
@@ -16,9 +17,11 @@ import type {
   ConnectionStartAuthority,
   DiscordConnectionRecord,
   GitHubConnectionRecord,
+  LinearConnectionRecord,
   ReadConnectionAttemptInput,
   SlackConnectionRecord,
   StartConnectionAttemptInput,
+  UpdateLinearConnectionTokensInput,
 } from "./types.js";
 
 type HubDatabase = DrizzleHandle;
@@ -217,6 +220,76 @@ export class ConnectionRepository {
     });
   }
 
+  async bindLinear(input: BindLinearConnectionInput): Promise<void> {
+    await this.runtime.transaction(async (runtimeTransaction) => {
+      const transaction = runtimeTransaction.drizzle();
+      await lockAccountSession(transaction, input.access);
+      await lockExternal(this.locks, runtimeTransaction, "linear", input.linearOrganizationId);
+      const attempt = await lockAttempt(transaction, input);
+      await lockStoredAuthority(transaction, attempt);
+      const [existing] = await transaction
+        .select({
+          id: schema.linearConnections.id,
+          organizationId: schema.linearConnections.organizationId,
+        })
+        .from(schema.linearConnections)
+        .where(eq(schema.linearConnections.linearOrganizationId, input.linearOrganizationId))
+        .for("update");
+      if (existing !== undefined && existing.organizationId !== attempt.organizationId) {
+        throw new ConnectionConflictError();
+      }
+      if (existing === undefined) {
+        await transaction.insert(schema.linearConnections).values({
+          organizationId: attempt.organizationId,
+          linearOrganizationId: input.linearOrganizationId,
+          linearOrganizationName: input.linearOrganizationName,
+          slug: await uniqueConnectionSlug(
+            transaction,
+            attempt.organizationId,
+            "linear",
+            input.linearOrganizationName,
+          ),
+          appUserId: input.appUserId,
+          accessToken: input.accessToken,
+          refreshToken: input.refreshToken ?? null,
+          accessTokenExpiresAt: input.accessTokenExpiresAt ?? null,
+          scopes: input.scopes,
+          connectedByUserId: attempt.userId,
+        });
+      } else {
+        await transaction
+          .update(schema.linearConnections)
+          .set({
+            linearOrganizationName: input.linearOrganizationName,
+            appUserId: input.appUserId,
+            accessToken: input.accessToken,
+            refreshToken: input.refreshToken ?? null,
+            accessTokenExpiresAt: input.accessTokenExpiresAt ?? null,
+            scopes: input.scopes,
+            connectedByUserId: attempt.userId,
+            updatedAt: sql`clock_timestamp()`,
+          })
+          .where(eq(schema.linearConnections.id, existing.id));
+      }
+      await consumeLockedAttempt(transaction, attempt.id);
+    });
+  }
+
+  async updateLinearTokens(input: UpdateLinearConnectionTokensInput): Promise<void> {
+    await this.database
+      .update(schema.linearConnections)
+      .set({
+        accessToken: input.accessToken,
+        ...(input.refreshToken === undefined ? {} : { refreshToken: input.refreshToken }),
+        ...(input.accessTokenExpiresAt === undefined
+          ? {}
+          : { accessTokenExpiresAt: input.accessTokenExpiresAt }),
+        ...(input.scopes === undefined ? {} : { scopes: input.scopes }),
+        updatedAt: sql`clock_timestamp()`,
+      })
+      .where(eq(schema.linearConnections.id, input.connectionId));
+  }
+
   private async bindExclusive(
     input: ReadConnectionAttemptInput,
     provider: "discord" | "slack",
@@ -321,6 +394,33 @@ export class ConnectionRepository {
           guildId: connection.guildId,
         } as const;
       }
+      if (provider === "linear") {
+        const [connection] = await transaction
+          .select({
+            linearOrganizationId: schema.linearConnections.linearOrganizationId,
+            accessToken: schema.linearConnections.accessToken,
+          })
+          .from(schema.linearConnections)
+          .where(
+            and(
+              eq(schema.linearConnections.id, connectionId),
+              eq(schema.linearConnections.organizationId, access.organizationId),
+            ),
+          )
+          .for("update");
+        if (connection === undefined) throw new ConnectionAccessDeniedError();
+        await transaction
+          .delete(schema.projectTriggerRoutes)
+          .where(eq(schema.projectTriggerRoutes.connectionId, connectionId));
+        await transaction
+          .delete(schema.linearConnections)
+          .where(eq(schema.linearConnections.id, connectionId));
+        return {
+          provider,
+          linearOrganizationId: connection.linearOrganizationId,
+          accessToken: connection.accessToken,
+        } as const;
+      }
       const [connection] = await transaction
         .select({
           teamId: schema.slackConnections.teamId,
@@ -399,6 +499,32 @@ export class ConnectionRepository {
       )
       .limit(1);
     return row === undefined ? undefined : slackConnection(row);
+  }
+
+  async findLinear(linearOrganizationId: string): Promise<LinearConnectionRecord | undefined> {
+    const [row] = await this.database
+      .select()
+      .from(schema.linearConnections)
+      .where(eq(schema.linearConnections.linearOrganizationId, linearOrganizationId))
+      .limit(1);
+    return row === undefined ? undefined : linearConnection(row);
+  }
+
+  async findLinearForOrganization(
+    organizationId: string,
+    linearOrganizationId: string,
+  ): Promise<LinearConnectionRecord | undefined> {
+    const [row] = await this.database
+      .select()
+      .from(schema.linearConnections)
+      .where(
+        and(
+          eq(schema.linearConnections.organizationId, organizationId),
+          eq(schema.linearConnections.linearOrganizationId, linearOrganizationId),
+        ),
+      )
+      .limit(1);
+    return row === undefined ? undefined : linearConnection(row);
   }
 
   async removeDiscord(guildId: string): Promise<void> {
@@ -550,7 +676,8 @@ async function consumeLockedAttempt(transaction: HubTransaction, attemptId: stri
 
 function initialConnectionAttemptPhase(provider: ConnectionProvider): ConnectionAttemptPhase {
   if (provider === "github") return "github_setup";
-  return provider === "discord" ? "discord_authorization" : "slack_authorization";
+  if (provider === "discord") return "discord_authorization";
+  return provider === "slack" ? "slack_authorization" : "linear_authorization";
 }
 
 function toAttempt(row: AttemptRow): ConnectionAttemptRecord {
@@ -606,6 +733,22 @@ function slackConnection(row: typeof schema.slackConnections.$inferSelect): Slac
     scopes: row.scopes,
   };
 }
+function linearConnection(
+  row: typeof schema.linearConnections.$inferSelect,
+): LinearConnectionRecord {
+  return {
+    id: row.id,
+    organizationId: row.organizationId,
+    slug: row.slug,
+    linearOrganizationId: row.linearOrganizationId,
+    linearOrganizationName: row.linearOrganizationName,
+    appUserId: row.appUserId,
+    accessToken: row.accessToken,
+    refreshToken: row.refreshToken,
+    accessTokenExpiresAt: row.accessTokenExpiresAt,
+    scopes: row.scopes,
+  };
+}
 
 async function uniqueConnectionSlug(
   transaction: HubTransaction,
@@ -621,6 +764,8 @@ async function uniqueConnectionSlug(
       select slug from slack_connections where organization_id = ${organizationId}
       union all
       select slug from discord_connections where organization_id = ${organizationId}
+      union all
+      select slug from linear_connections where organization_id = ${organizationId}
     ) slugs
     where slug = ${base} or slug like ${`${base}-%`}
     order by slug
