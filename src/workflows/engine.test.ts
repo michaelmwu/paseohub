@@ -1079,6 +1079,81 @@ describe("durable multi-step workflow engine", () => {
     assert.equal(run.deadlineAt.toISOString(), "2026-08-06T12:02:00.000Z");
   });
 
+  it("derives workspace affinity from the authenticated conversation and retains it through the workflow deadline", async () => {
+    const now = new Date("2026-08-06T12:00:00.000Z");
+    const fixture = await workflowFixture({ rawConfiguration: affinityConfiguration() });
+    const baseProvider = providerMatch(fixture.configuration, fixture.revisionId);
+    const provider = {
+      ...baseProvider,
+      workspaceAffinityKey: () => "manual-conversation-7",
+    } satisfies import("../triggers/index.js").TriggerProvider;
+    let dispatched: LaunchMachineIntent | undefined;
+    const { handler, engine } = createDurableWorkflowHandler({
+      database: fixture.database,
+      entitlements: fixture.entitlements,
+      providers: [provider],
+      now: () => now,
+      dispatchLaunchMachineIntent: async (intent) => {
+        dispatched = intent;
+        const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+          intent.workflowStepRunId!,
+        );
+        if (execution === undefined) throw new Error("workflow execution was not persisted");
+        return { execution };
+      },
+    });
+
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+
+    assert.deepEqual(dispatched?.workspaceAffinity, {
+      key: "review-manual-conversation-7",
+      retainUntil: "2026-08-06T12:02:00.000Z",
+      autoArchive: true,
+    });
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+    const step = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+    assert.deepEqual(
+      (await fixture.database.findAgentExecutionByWorkflowStepRunId(step.id))?.launchIntent
+        ?.workspaceAffinity,
+      dispatched?.workspaceAffinity,
+    );
+  });
+
+  it("fails an invalid rendered workspace affinity key without retrying or dispatching", async () => {
+    const fixture = await workflowFixture({ rawConfiguration: affinityConfiguration() });
+    const baseProvider = providerMatch(fixture.configuration, fixture.revisionId);
+    const provider = {
+      ...baseProvider,
+      workspaceAffinityKey: () => "x".repeat(506),
+    } satisfies import("../triggers/index.js").TriggerProvider;
+    const dispatches: LaunchMachineIntent[] = [];
+    const { handler, engine } = createDurableWorkflowHandler({
+      database: fixture.database,
+      entitlements: fixture.entitlements,
+      providers: [provider],
+      dispatchLaunchMachineIntent: async (intent) => {
+        dispatches.push(intent);
+        throw new Error("invalid workspace affinity key must not dispatch");
+      },
+    });
+
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+    await engine.processAvailable();
+
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+    const step = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+    assert.equal(run.status, "failed");
+    assert.match(run.failureReason ?? "", /workspace affinity key exceeds 512 characters/iu);
+    assert.equal(step.status, "failed");
+    assert.deepEqual(dispatches, []);
+  });
+
   it("times out a live step when the whole-run deadline expires", async () => {
     let now = new Date("2026-08-06T12:00:00.000Z");
     const fixture = await workflowFixture({
@@ -1638,6 +1713,33 @@ function deadlineConfiguration(options: { idleTimeout?: string } = {}): Record<s
             idle_timeout: options.idleTimeout ?? "20s",
             agent: { provider: "codex" },
             prompt: [{ text: "run" }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function affinityConfiguration(): Record<string, unknown> {
+  return {
+    environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/workspace" }],
+    triggers: [
+      {
+        name: "affinity-route",
+        on: "manual.run",
+        max_runtime: "2m",
+        steps: [
+          {
+            id: "review",
+            environment: "runner",
+            max_runtime: "1m",
+            idle_timeout: "20s",
+            agent: { provider: "codex" },
+            prompt: [{ text: "run" }],
+            auto_archive: true,
+            workspace_affinity: {
+              key: "review-${{ paseo.trigger.conversation_key }}",
+            },
           },
         ],
       },

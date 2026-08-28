@@ -486,6 +486,11 @@ export class DurableWorkflowEngine {
     }
     const step = trigger.steps[next.ordinal];
     if (step === undefined) throw new Error(`compiled step missing for ${next.stepId}`);
+    const triggerConversationKey = workspaceAffinityConversationKey(
+      step,
+      this.options.providers ?? [],
+      reconciledRun.triggerContext,
+    );
     return {
       run: reconciledRun,
       configuration,
@@ -493,7 +498,7 @@ export class DurableWorkflowEngine {
       steps,
       next,
       step,
-      context: workflowContext(reconciledRun, steps, trigger.values),
+      context: workflowContext(reconciledRun, steps, trigger.values, triggerConversationKey),
       recoverPreHandoffDispatch,
     };
   }
@@ -913,6 +918,16 @@ function buildStepIntent(
     throw new Error(`workflow environment ${environmentName} is unavailable`);
   }
   const agent = materializeAgent(step.agent, context);
+  const workspaceAffinity =
+    step.workspaceAffinity === undefined
+      ? undefined
+      : {
+          key: workspaceAffinityKey(renderExpressionTemplate(step.workspaceAffinity.key, context)),
+          // A matching arrival extends this deadline on the daemon. It is deliberately the
+          // workflow's hard deadline rather than a separate sliding inactivity timer.
+          retainUntil: run.deadlineAt.toISOString(),
+          autoArchive: step.autoArchive,
+        };
   return {
     ...buildLaunchMachineIntent({
       organizationId: run.organizationId,
@@ -941,6 +956,7 @@ function buildStepIntent(
       timeoutMs: step.maxRuntimeMs,
       idleTimeoutMs: step.idleTimeoutMs,
       autoArchive: step.autoArchive,
+      ...(workspaceAffinity === undefined ? {} : { workspaceAffinity }),
       triggerContext: run.triggerContext,
       outputContext: run.outputContext,
       configurationRevisionId: run.configurationRevisionId,
@@ -973,6 +989,7 @@ function workflowContext(
   run: Extract<Awaited<ReturnType<Database["findTriggerRunById"]>>, { outcome: "accepted" }>,
   steps: readonly { stepId: string; status: string; output: unknown }[],
   values: Readonly<Record<string, import("./expression.js").Expression>>,
+  triggerConversationKey?: string,
 ): ExpressionContext {
   return {
     prompt: run.prompt,
@@ -982,7 +999,19 @@ function workflowContext(
       steps.map((step) => [step.stepId, { status: step.status, output: step.output }]),
     ),
     values,
+    ...(triggerConversationKey === undefined ? {} : { triggerConversationKey }),
   };
+}
+
+function workspaceAffinityKey(value: string): string {
+  const key = value.trim();
+  if (key.length === 0) {
+    throw new ExpressionEvaluationError("workspace affinity key resolved to an empty value");
+  }
+  if (key.length > 512) {
+    throw new ExpressionEvaluationError("workspace affinity key exceeds 512 characters");
+  }
+  return key;
 }
 
 function stepUsesTriggerContext(
@@ -1004,6 +1033,17 @@ function providerForTriggerContext(
     return undefined;
   }
   return providers.find((provider) => provider.name === triggerContext.provider);
+}
+
+function workspaceAffinityConversationKey(
+  step: CompiledProjectConfiguration["triggers"][number]["steps"][number],
+  providers: readonly TriggerProvider[],
+  triggerContext: unknown,
+): string | undefined {
+  if (step.workspaceAffinity === undefined) return undefined;
+  return providerForTriggerContext(providers, triggerContext)?.workspaceAffinityKey?.(
+    triggerContext,
+  );
 }
 
 function composeValues(
