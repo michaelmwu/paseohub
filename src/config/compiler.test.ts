@@ -665,7 +665,7 @@ describe("workflow compiler", () => {
             {
               ...step,
               workspace_affinity: {
-                key: "review-${{ paseo.trigger.conversation_key }}",
+                key: " review-${{ paseo.trigger.conversation_key }} ",
               },
             },
           ],
@@ -673,7 +673,7 @@ describe("workflow compiler", () => {
       ],
     });
     assert.deepEqual(compiled.triggers[0]?.steps[0]?.workspaceAffinity, {
-      key: "review-${{ paseo.trigger.conversation_key }}",
+      key: " review-${{ paseo.trigger.conversation_key }} ",
     });
     assert.deepEqual(parseCompiledHubConfig(compiled), compiled);
 
@@ -687,6 +687,19 @@ describe("workflow compiler", () => {
           },
         ],
       }),
+    );
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...trigger,
+              steps: [{ ...step, workspace_affinity: { key: "   " } }],
+            },
+          ],
+        }),
+      /workspace affinity key must not be blank/iu,
     );
     assert.throws(
       () =>
