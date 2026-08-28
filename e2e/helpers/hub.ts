@@ -4341,7 +4341,7 @@ class HubUser {
 
   async expectNotConfiguredConnections(): Promise<void> {
     await this.openOrganizationSection("Connections");
-    await expect(this.page.getByText("Not configured", { exact: true })).toHaveCount(3);
+    await expect(this.page.getByText("Not configured", { exact: true })).toHaveCount(4);
     await expect(this.page.getByRole("button", { name: /Connect|Revoke/u })).toHaveCount(0);
     await expectAccessible(this.page);
   }

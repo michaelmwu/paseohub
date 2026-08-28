@@ -14,6 +14,7 @@ import { loadBuiltStartServer } from "../../server/build.js";
 import { createGitHubRegistration } from "../../providers/github/index.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
 import { createSlackRegistration } from "../../providers/slack/index.js";
+import { createLinearRegistration } from "../../providers/linear/index.js";
 import {
   BrowserDiscordBot,
   BrowserDiscordConnections,
@@ -189,6 +190,13 @@ async function main(): Promise<void> {
                 }
               : null,
             ...(slackConfigured ? { botClient: slackBot } : {}),
+          }),
+          createLinearRegistration({
+            database,
+            auth,
+            applicationBaseUrl: publicBaseUrl,
+            publicBaseUrl,
+            configuration: null,
           }),
         ];
   const runtime = await createApplicationRuntime({
