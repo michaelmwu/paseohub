@@ -2005,6 +2005,9 @@ async function buildCreateAgentOptions(
       : {
           worktree: intent.environment.worktree,
         }),
+    ...(intent.workspaceAffinity === undefined
+      ? {}
+      : { workspaceAffinity: intent.workspaceAffinity }),
   };
 }
 
